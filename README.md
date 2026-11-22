@@ -320,3 +320,4 @@ Solver/
 
 - Ghiffari Bravia Hisham `https://github.com/ghiffaribraviah`
 - Muhammad Syafiq Romadhon `https://github.com/koniro-kishi`
+- [https://github.com/zidhanerlansunanda-png/n-queen-P1_22.git](https://github.com/zidhanerlansunanda-png/n-queen_P1_22.git)
