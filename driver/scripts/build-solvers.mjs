@@ -2,13 +2,17 @@
 // Compiles every solver, Solver/<category>/<name>.cpp, to WASM with emcc, each one into its own module under
 // Solver/dist/<category>/<name>/, and writes Solver/dist/manifest.json.
 // Default: runs emcc inside a pinned emscripten/emsdk Docker image.
+// A solver that breaks a rule of the competition (see check-rules.mjs and the README) is not built, and the reason is printed. A folder
+// with a file NO_RULES in it is not checked.
 // Use --native (or NQ_NATIVE=1) to use an emcc already on PATH instead.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
+import { checkArgs, checkRules, describeViolations } from "./check-rules.mjs";
 import { discoverSolvers } from "./discover.mjs";
+import { emccArgs } from "./emcc-args.mjs";
 
 const repo = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -30,46 +34,34 @@ const maxMemBytes = Math.round(cfg.solverMaxMemoryMB * 1024 * 1024);
 const posix = (p) => p.split(path.sep).join("/");
 const rel = (p) => posix(path.relative(repo, p));
 
-function emccArgs(solver, outJs) {
-  const sources = [solver.source, path.join(repo, "Tester/Harness/nqueen_runtime.cpp")];
-  return [
-    ...sources.map(rel),
-    // Helper headers of the solvers that fail on purpose. Not every checkout has them.
-    ...(existsSync(path.join(repo, "driver/check/fixtures")) ? ["-Idriver/check/fixtures"] : []),
-    "-ITester/Harness",
-    "-O2",
-    "-std=c++17",
-    "-sMODULARIZE=1",
-    "-sEXPORT_ES6=1",
-    "-sEXPORT_NAME=createSolver",
-    // worker for the browser, node for the benchmark harness (see README note)
-    "-sENVIRONMENT=worker,node",
-    "-sALLOW_MEMORY_GROWTH=1",
-    `-sMAXIMUM_MEMORY=${maxMemBytes}`,
-    "-sSTACK_SIZE=1048576",
-    "-sFILESYSTEM=0",
-    // The harness in Tester/Harness/nqueen_runtime.cpp: the host writes the problem, times nq_solve, then reads the result.
-    "-sEXPORTED_FUNCTIONS=_nq_alloc_input,_nq_prepare,_nq_solve,_nq_pack,_nq_result,_nq_count,_nq_bad,_nq_heap_top",
-    "-sEXPORTED_RUNTIME_METHODS=HEAPU8",
-    // Keeps function names in the name section, so a trap shows which function it was in. Does not slow the code down.
-    "--profiling-funcs",
-    "-o",
-    rel(outJs),
-  ];
+// Helper headers of the solvers that fail on purpose. Not every checkout has them.
+const helpers = existsSync(path.join(repo, "driver/check/fixtures")) ? ["driver/check/fixtures"] : [];
+
+function solverArgs(solver, outJs) {
+  return emccArgs({
+    sources: [solver.source, path.join(repo, "Tester/Harness/nqueen_runtime.cpp")].map(rel),
+    includes: [...helpers, "Tester/Harness"],
+    outJs: rel(outJs),
+    maxMemBytes,
+  });
 }
 
-function run(args) {
-  if (native)
-    return spawnSync("em++", args, {
+/** Runs a tool of the toolchain, "em++" by default, in the root of the repository. */
+function run(args, tool = "em++") {
+  if (native) {
+    const shell = process.platform === "win32";
+    // Through a shell, the path of a tool with a space in it (a user's folder) is one word only in quotes.
+    return spawnSync(shell && tool.includes(" ") ? `"${tool}"` : tool, args, {
       cwd: repo,
       encoding: "utf8",
-      shell: process.platform === "win32",
+      shell,
     });
+  }
   const dockerArgs = ["run", "--rm", "-v", `${repo}:/src`, "-w", "/src"];
   if (process.platform !== "win32" && os.userInfo().uid >= 0) {
     dockerArgs.push("-u", `${os.userInfo().uid}:${os.userInfo().gid}`);
   }
-  dockerArgs.push(`emscripten/emsdk:${EMSDK_TAG}`, "em++", ...args);
+  dockerArgs.push(`emscripten/emsdk:${EMSDK_TAG}`, tool, ...args);
   return spawnSync("docker", dockerArgs, { cwd: repo, encoding: "utf8" });
 }
 
@@ -93,6 +85,34 @@ if (probe.error || probe.status !== 0) {
   process.exit(1);
 }
 
+/** The tool that reads debug information: part of the LLVM that comes with emsdk. */
+function dwarfdumpTool() {
+  if (!native) return "/emsdk/upstream/bin/llvm-dwarfdump";
+  const root = spawnSync("em-config", ["LLVM_ROOT"], { encoding: "utf8", shell: process.platform === "win32" });
+  return path.join((root.stdout ?? "").trim(), "llvm-dwarfdump");
+}
+const dwarfdump = dwarfdumpTool();
+
+/**
+ * What the rules say about a solver, as the leaderboard checks it: an error text, or undefined. A compile error is left to the build
+ * itself to report.
+ */
+async function ruleProblem(solver, outDir) {
+  const object = path.join(outDir, "check.o");
+  const debug = path.join(outDir, "check.dwarf");
+  try {
+    const compiled = run(checkArgs({ source: rel(solver.source), includes: [...helpers, "Tester/Harness"], outObject: rel(object) }));
+    if (compiled.error || compiled.status !== 0) return undefined;
+    const read = run(["--debug-info", rel(object), "-o", rel(debug)], dwarfdump);
+    if (read.error || read.status !== 0) return `The rules could not be checked: ${read.error?.message ?? read.stderr}`;
+    const found = await checkRules({ source: readFileSync(solver.source, "utf8"), objectFile: object, debugFile: debug, sourcePath: rel(solver.source) });
+    return found.length > 0 ? describeViolations(found) : undefined;
+  } finally {
+    rmSync(object, { force: true });
+    rmSync(debug, { force: true });
+  }
+}
+
 const distRoot = path.join(repo, "Solver/dist");
 rmSync(distRoot, { recursive: true, force: true });
 mkdirSync(distRoot, { recursive: true });
@@ -110,7 +130,15 @@ for (const s of solvers) {
   const outJs = path.join(outDir, "solver.mjs");
   process.stdout.write(`Building ${s.id} ... `);
   const entry = { id: s.id, category: s.category, name: s.name, file: s.file, snapshots: s.snapshots };
-  const r = run(emccArgs(s, outJs));
+  const broken = existsSync(path.join(path.dirname(s.source), "NO_RULES")) ? undefined : await ruleProblem(s, outDir);
+  if (broken) {
+    failed++;
+    console.log("NOT BUILT");
+    console.error(broken);
+    manifest.solvers.push({ ...entry, ok: false, error: broken });
+    continue;
+  }
+  const r = run(solverArgs(s, outJs));
   if (r.error || r.status !== 0) {
     failed++;
     console.log("FAILED");

@@ -1,7 +1,7 @@
 // The result column: a badge for how the run ended, what it was run on, the figures of the result (how many solutions,
-// the best time, the heap peak) as tiles, and what to read between the lines. Pure functions make the text and the
+// the best time, the memory) as tiles, and what to read between the lines. Pure functions make the text and the
 // tiles, so that they can be tested; ResultPanel only puts them on the page.
-import { formatDuration, formatTime, splitBytes, splitTime } from "../Configuration/budget";
+import { exactBytes, formatDuration, formatBytes, formatTime, splitBytes, splitTime } from "../Configuration/budget";
 import type { Rule } from "../Board/validator";
 import type { ErrorKind, Measurement, SessionResult } from "../Execution/protocol";
 import type { RunView } from "../Execution/run-controller";
@@ -71,10 +71,10 @@ export interface MeasurementModel {
 }
 
 const TIME_LABEL = "Best time";
-const HEAP_LABEL = "Heap peak";
+const MEMORY_LABEL = "Memory";
 const none = (): Tile[] => [
   { label: TIME_LABEL, value: "–", muted: true },
-  { label: HEAP_LABEL, value: "–", muted: true },
+  { label: MEMORY_LABEL, value: "–", muted: true },
 ];
 
 /**
@@ -98,7 +98,7 @@ export function measurementModel(r: { debug: boolean; measurement: Measurement }
       return {
         tiles: [
           { label: TIME_LABEL, value: "…", hint: `measuring, run ${p.done} of ${p.total}`, muted: true },
-          { label: HEAP_LABEL, value: "…", muted: true },
+          { label: MEMORY_LABEL, value: "…", muted: true },
         ],
         detail: [],
         notes: [],
@@ -112,9 +112,10 @@ export function measurementModel(r: { debug: boolean; measurement: Measurement }
       const tiles: Tile[] = [
         { label: TIME_LABEL, value: best.value, unit: best.unit, title: `Exactly ${formatDuration(t.minMs)} (m:ss.fffff)` },
       ];
-      if (m.metrics.heapPeakBytes !== undefined) {
-        const heap = splitBytes(m.metrics.heapPeakBytes);
-        tiles.push({ label: HEAP_LABEL, value: heap.value, unit: heap.unit });
+      const memory = m.metrics.memory;
+      if (memory) {
+        const total = splitBytes(memory.bytes);
+        tiles.push({ label: MEMORY_LABEL, value: total.value, unit: total.unit, title: `Exactly ${exactBytes(memory.bytes)}` });
       }
       const notes: string[] = [];
       // Under a millisecond the timer's own step is a large share of the time, so the spread is large whatever the
@@ -126,7 +127,12 @@ export function measurementModel(r: { debug: boolean; measurement: Measurement }
         );
       return {
         tiles,
-        detail: [`median ${formatTime(t.medianMs)}`, `spread ${formatTime(t.madMs)}`, plural(t.samples, "run", "runs")],
+        detail: [
+          `median ${formatTime(t.medianMs)}`,
+          `spread ${formatTime(t.madMs)}`,
+          plural(t.samples, "run", "runs"),
+          ...(memory ? [`memory: ${formatBytes(memory.staticBytes)} static, ${formatBytes(memory.stackBytes)} stack, ${formatBytes(memory.heapBytes)} heap`] : []),
+        ],
         notes,
       };
     }
@@ -223,7 +229,7 @@ export interface ResultContext {
 
 /**
  * The right column's card: the title Result with how the run ended as a badge (Successful, Failed, ...), then what a
- * reader needs. A run that ended well shows its figures: the counts, the best time and the heap peak. A run that
+ * reader needs. A run that ended well shows its figures: the counts, the best time and the memory. A run that
  * went wrong shows the error, and no figures, since a wrong or missing result has no speed worth showing.
  * Rebuilt only when something changed.
  */

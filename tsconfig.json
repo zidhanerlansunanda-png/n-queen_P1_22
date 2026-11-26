@@ -11,5 +11,5 @@
     "isolatedModules": true,
     "types": ["vite/client", "node"]
   },
-  "include": ["driver/**/*.ts", "Tester/**/*.ts", "tests/**/*.ts"]
+  "include": ["driver/**/*.ts", "Tester/**/*.ts"]
 }
