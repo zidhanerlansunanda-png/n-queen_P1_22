@@ -22,14 +22,15 @@ export function mad(values: readonly number[]): number {
   return median(values.map((v) => Math.abs(v - m)));
 }
 
-/** `samples` are the timed runs; `warmupMs` is the first run, which is not among them. */
-export function summarize(samples: readonly number[], warmupMs: number): TimeStats {
+/** `samples` are the timed runs; `warmupMs` is a first run that is not among them, when there is one. */
+export function summarize(samples: readonly number[], warmupMs?: number): TimeStats {
   return {
     minMs: Math.min(...samples),
     medianMs: median(samples),
     madMs: mad(samples),
     samples: samples.length,
-    warmupMs,
+    ...(warmupMs !== undefined ? { warmupMs } : {}),
+    runsMs: [...samples],
   };
 }
 

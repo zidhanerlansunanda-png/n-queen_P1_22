@@ -68,7 +68,7 @@ The window has three zones: the configuration on the left, the board and its nav
 
 Inside a list: first, previous, next and last, a slider, and **Go to**. The arrow keys move by one, Page Up and Page Down by ten, Home and End to the ends, unless a text field has the focus. On Snapshots, **Play** steps through the recorded snapshots at 1, 4, 16 or 64 a second like a replay of the search.
 
-**The result** (right, under the run controls): one card titled Result, with how the run ended as a badge. A run that was checked shows its figures as tiles: the number of solutions or boards, the queens, the best time and the heap peak, with the median, the spread and the number of runs under them. A run that went wrong shows the error instead, in a red box, and no figures.
+**The result** (right, under the run controls): one card titled Result, with how the run ended as a badge. A run that was checked shows its figures as tiles: the number of solutions or boards, the queens, the best time and the memory, with the median, the spread and the number of runs under them. A run that went wrong shows the error instead, in a red box, and no figures.
 
 ## Problem cases
 
@@ -94,7 +94,7 @@ Holes and walls are both a list of positions, `(row, column)` and 0-based. The l
 
 | Status | Meaning |
 | --- | --- |
-| Successful | Every returned solution is valid and none is repeated. Shows the count, the queens, the compute time and the heap peak. **This copy of the tester has no reference solver, so the count is not compared with the right one** (the result says so), and on Walled the boards are valid but not known to be the best |
+| Successful | Every returned solution is valid and none is repeated. Shows the count, the queens, the compute time and the memory. **This copy of the tester has no reference solver, so the count is not compared with the right one** (the result says so), and on Walled the boards are valid but not known to be the best |
 | Suboptimal | Walled: the boards are valid, but they hold fewer queens than the maximum. Only reported when there is a reference solver to say what the maximum is |
 | Incomplete | Fewer solutions returned than there are. Only reported when there is a reference solver to say how many there are |
 | Failed | The compute time of the first run exceeded the cutoff. The worker is terminated |
@@ -132,32 +132,41 @@ snapshot(queens, "row " + std::to_string(r));           // the label can be a st
 
 ## Time, memory and the cutoff
 
-A run of a solver is **1 + 7 runs**, one after the other, each in a fresh WASM instance:
+A run of a solver is **1 + 7 runs**, one after the other, each in a fresh WASM instance. All eight do the same thing: your program solves, hands its answer over, and is measured.
 
-1. The **first run** is the full one: the result is checked, snapshots are recorded in a Debug run, and the status and the boards are shown at once. It is also the warm-up. Runs of a few milliseconds were measurably slower the first time, so its time is left out.
-2. **Seven timed runs** only time the solver and read the heap. While they go on, the tiles for time and heap say `measuring, run 3 of 8` and the boards can be browsed. When the last one is done they are replaced by the numbers:
+1. The **first run** decides the status: the result is checked, snapshots are recorded in a Debug run, and the status and the boards are shown at once. It is also the warm-up. Runs of a few milliseconds were measurably slower the first time, so its time is left out.
+2. **Seven timed runs** follow, and each must give the same answer as the first: valid, without repeats, with the same number of solutions (and on Walled the same number of queens on them). While they go on, the tiles for time and memory say `measuring, run 3 of 8` and the boards can be browsed. When the last one is done they are replaced by the numbers:
 
 ```
-Best time  35.0 ms            Heap peak  0.97 MB
-median 35.2 ms · spread 90 µs · 7 runs
+Best time  35.0 ms            Memory  0.968 MB
+median 35.2 ms · spread 90 µs · 7 runs · memory: 2.45 KB static, 24 B stack, 988.76 KB heap
 ```
 
 Times are written in microseconds, milliseconds or, from a thousand milliseconds, seconds, with about three digits: `230 µs`, `3.52 ms`, `35.2 ms`, `352 ms`, `1.23 s`, `12.3 s`, `123 s`. Hovering over the best time shows the exact figure as m:ss.fffff.
 
-**Compute time** is the fastest of the seven timed runs. Whatever else runs on the computer (a browser tab, an editor, the browser itself) can only make a run slower, never faster, so the fastest run is the one closest to what the solver costs by itself. The **median** is shown under it, so that a typical run can be compared with the best one. One run is the time from the call to the solver's function until it returns. Passing the problem in, packing the result, checking it, loading the module and starting the worker are not counted. The **spread** is the median absolute deviation from the median; unlike a standard deviation, one slow run hardly moves it.
+**Compute time** is the fastest of the seven timed runs. Whatever else runs on the computer (a browser tab, an editor, the browser itself) can only make a run slower, never faster, so the fastest run is the one closest to what the solver costs by itself. The **median** is shown under it, so that a typical run can be compared with the best one. One run is the time from the call to your solver function until it returns. Loading and compiling the program, passing it the problem, handing over and checking the answer, and measuring the memory are not counted; the [rules](#rules) see to it that nothing of your program runs outside the function. The **spread** is the median absolute deviation from the median; unlike a standard deviation, one slow run hardly moves it.
 
 - If the spread is over 5% of the median, the result says the measurement is noisy. Close other programs and run again.
 - Under 1 ms the result says just that the time is approximate: the timer's own step (5 µs in Chrome when the page is cross-origin isolated, coarser otherwise) is then a large share of the time.
 - Times differ between computers, so compare solvers on one computer.
 
-**Heap peak** is the most heap your function held at once, even if it freed some of it again, and the highest of the eight runs. It is read from the top of the Emscripten heap (`sbrk`) before and right after your function, and before the result is packed, because packing allocates too and that memory is the tester's. What your function allocates counts, and so does the result it returns. The stack (fixed at 1 MB) and global or static arrays do not, because they are part of the module.
+**Memory** is every byte your program wrote on the stack and the heap, plus all of its global and static data, in the run that used the most. The tester fills the free memory with a random pattern before your program starts, and afterwards looks at which bytes changed; runs go in pairs with opposite patterns, so that no byte is missed. So:
+
+- It does not matter how the memory was obtained: `new`, `malloc`, a container, a global array and the stack all count.
+- Memory that is reserved but never written does not count (a `std::vector` that was only `reserve`d), except global and static data, which counts whole.
+- Memory that is freed and used again counts once.
+- A few KB are the tester's own (the problem it passes in, its data), the same for every program on a board.
+- Memory you have not written holds random bytes, not zeros, except what `calloc`, a container or `()` initialises. A program that reads uninitialised memory behaves differently from run to run, and its later runs will not give the same answer as the first.
+- Growing the WebAssembly memory yourself (`__builtin_wasm_memory_grow`) ends the run as an Execution Error; allocating in the usual ways is fine.
+
+A solver built with an older version of the tester shows no memory: run `npm run build:solvers`.
 
 **When time and memory are not measured**
 
 - A Debug run is not repeated, because recording snapshots takes time and memory.
 - A result that is wrong (Invalid Solution, or the same solution twice) is not repeated, and shows no time: the speed of a wrong answer means little.
 - A run that ended as Failed or Execution Error has no result to measure.
-- If a timed run goes wrong (cutoff, trap, a module that does not load), the status stays that of the first run, and a note says `Time and memory not measured: run 4 of 8: …`.
+- If a timed run goes wrong (cutoff, trap, a module that does not load, or an answer that differs from the first run's), the status stays that of the first run, and a note says `Time and memory not measured: run 4 of 8: …`.
 
 A Run takes about eight times as long as one run of the solver. Stop cancels all of it.
 
@@ -215,12 +224,33 @@ std::vector<std::vector<std::pair<int, int>>> solveWalled(int n, const std::vect
 
 ### Rules
 
-- No `main`, threads, file or network I/O. `exit()` ends the run as Execution Error.
-- Globals and statics are fine: every run gets a fresh WASM instance, and static initializers run before timing starts.
-- C++ exceptions are not enabled. A `throw` aborts the run as Execution Error. To enable them, add the Emscripten exception flag to `emccArgs` in `driver/scripts/build-solvers.mjs`.
+A competition solver keeps these. Rules 1 to 3 are checked when it is compiled: a solver that breaks one is not built, here and on the leaderboard, and the message says why. Rule 4 is checked by people.
+
+1. **Do not redefine what the tester uses too:** the global `operator new` and `delete`, the functions of the C and runtime libraries (`malloc`, `free`, `memcpy`, `memset`, ...), or anything of the standard library (`std`). Using them is fine. The one exception is `std::hash` for a type of your own. `#line` is not allowed.
+2. **No global variables.** Outside functions there may be only constants (`const` or `constexpr` numbers, characters and arrays of them), types (`struct`, `class`) and functions. This goes for variables in a namespace and `static` members too. Inside a function everything is fine, `static` too.
+3. **Only the C++ standard library** and `"nqueens.h"`. The `__builtin_` functions of the compiler are fine.
+4. **No stored queen placements.** A program may not carry solutions, whole or in part, in any form: typed in, encoded, or computed while it is compiled. Computing tables while the solver runs is fine.
+
+```cpp
+int memo[100];                          // no: a global variable
+std::vector<int> positions;             // no: a global variable
+const int MAXN = 12;                    // yes: a constant
+
+std::vector<std::vector<int>> solveNQueens(int n) {
+    int table[100] = {};                // yes: inside the function
+    static std::vector<int> spare;      // yes
+    // ...
+}
+```
+
+A helper function that needs a variable takes it as a parameter, or the two are members of a `struct` that the solver makes.
+
+Also:
+
+- No threads, file or network I/O, printing or reading the clock. `main` is never run. `exit()` ends the run as Execution Error.
+- C++ exceptions are not enabled. A `throw` aborts the run as Execution Error.
 - Memory is limited by `solverMaxMemoryMB`; running out of it is an Execution Error.
-- The result is moved out of your function, so destroying it is not timed. Whatever your function allocates and frees itself is.
-- Your function is run eight times for every Run, each in a fresh instance. Only the first run's result is checked, so it must give the same result every time. The heap it holds at once is shown as its memory (see [Time, memory and the cutoff](#time-memory-and-the-cutoff)).
+- Your program is run eight times for every Run, each in a fresh instance, and every run must give the same answer. Only the call of your function is timed (see [Time, memory and the cutoff](#time-memory-and-the-cutoff)).
 
 ### Build and run
 
@@ -251,8 +281,8 @@ They are written to be clear, not to be fast. Measured in Node on one computer, 
 ```
 git clone https://github.com/emscripten-core/emsdk.git C:\emsdk
 cd C:\emsdk
-.\emsdk install latest
-.\emsdk activate latest
+.\emsdk install 5.0.5
+.\emsdk activate 5.0.5
 .\emsdk_env.ps1
 em++ --version
 ```
@@ -264,8 +294,8 @@ If PowerShell blocks the script (execution policy), use `cmd /k "C:\emsdk\emsdk_
 ```
 git clone https://github.com/emscripten-core/emsdk.git ~/emsdk
 cd ~/emsdk
-./emsdk install latest
-./emsdk activate latest
+./emsdk install 5.0.5
+./emsdk activate 5.0.5
 source ./emsdk_env.sh
 em++ --version
 ```
@@ -276,7 +306,7 @@ em++ --version
 npm run build:solvers -- --native
 ```
 
-(or set `NQ_NATIVE=1`). The build must run in the same terminal where `emsdk_env` was loaded, because it only sets PATH for that session. To make it permanent: `emsdk activate latest --permanent` (on Windows, from an Administrator PowerShell), then reopen your terminals.
+(or set `NQ_NATIVE=1`). The build must run in the same terminal where `emsdk_env` was loaded, because it only sets PATH for that session. To make it permanent: `emsdk activate 5.0.5 --permanent` (on Windows, from an Administrator PowerShell), then reopen your terminals.
 
 Notes:
 
@@ -288,7 +318,7 @@ Notes:
 ## How it works
 
 - Each run gets its own Web Worker. The main thread does not share memory with it: it waits for messages, and a timer on the main thread terminates the worker at the cutoff.
-- The harness in `Tester/Harness/nqueen_runtime.cpp` is compiled into every solver. The host drives it in four steps: it writes the problem into the module's memory (`nq_alloc_input`), the harness decodes it (`nq_prepare`), the host times `nq_solve`, which calls the solver's function and moves what it returns into a static, and `nq_pack` flattens it. Only `nq_solve` is timed. The host also reads the heap top (`nq_heap_top`) after `nq_prepare` and again after `nq_solve`, before `nq_pack`, so that packing is not counted as the solver's memory. The functions a solver leaves out are replaced by weak stubs, so a missing one is reported instead of crashing.
+- The harness in `Tester/Harness/nqueen_runtime.cpp` is compiled into every solver. The host drives it in steps: it writes the problem into the module's memory (`nq_alloc_input`), the harness decodes it (`nq_prepare`), `nq_solve` calls the solver's function and moves what it returns into a static, and `nq_pack` flattens it. The host times only `nq_solve`, the call of the solver's function. Before a solver is compiled into a module it is compiled once alone, with debug information, and `driver/scripts/check-rules.mjs` reads from that what it defines: a solver that breaks a rule is not built. The memory is measured from outside the module (`Tester/Execution/memory-probe.ts`): before any code of the module runs, the host fills the stack and the heap with a pattern (`nq_stack_top` says where they begin), fills what the memory grows by, and after the solve and again after the pack counts the bytes that changed. The functions a solver leaves out are replaced by weak stubs, so a missing one is reported instead of crashing.
 - The result is one flat byte buffer, not millions of small arrays (`Tester/Board/solution-set.ts`): N bytes per solution for one queen per row, or a record of queen count plus (row, column) pairs on Walled. The worker copies it out of the module's memory and hands the buffer to the main thread without copying it again.
 - Checking the result runs in the worker after the timing: a fast loop with stamped tables finds the first wrong solution; duplicates are found by sorting a 53-bit hash of each solution and comparing equal hashes byte by byte, so a collision never counts.
 - The worker (`Tester/Execution/measure.ts`) runs the solver 1 + 7 times and reports `started` and `solved` around every run, so the cutoff timer runs between them in each of the eight. It reports the outcome of the first run as soon as it is checked; the session judges it at once and shows it. A timed run that goes over the cutoff or fails only spoils the measurement: the status of the first run stands. Checking the result takes as long as it takes.

@@ -36,6 +36,8 @@ export interface SessionOptions {
   snapshotTail: number;
   /** Timed runs after the first one. 0, the default, runs the solver once. A Debug run is never repeated. */
   timedRuns?: number;
+  /** One discarded run before the first one, whose time then counts (see measure.ts). The server asks for it. */
+  warmupRun?: boolean;
   /** The reference run on this board. Without it the result is only checked for validity. */
   reference?: ReferenceResult;
   createWorker: WorkerFactory;
@@ -111,6 +113,7 @@ export class Session implements SessionLike {
       snapshotHead: this.o.snapshotHead,
       snapshotTail: this.o.snapshotTail,
       timedRuns: this.o.debug ? 0 : (this.o.timedRuns ?? 0),
+      ...(this.o.warmupRun ? { warmupRun: true } : {}),
     });
     // Compute time has not started while the module loads, so a hanging load would never reach the cutoff otherwise.
     this.armLoadTimer();
@@ -139,6 +142,12 @@ export class Session implements SessionLike {
         // The solver has returned. Packing and checking the result take as long as they take.
         clearTimeout(this.runTimer);
         if (msg.computeMs > this.limitSeconds * 1000) this.overCutoff(msg.computeMs);
+        return;
+      case "warmed":
+        // The first run loads a module of its own, and has a cutoff of its own.
+        this.started = false;
+        clearTimeout(this.runTimer);
+        this.armLoadTimer();
         return;
       case "outcome": {
         const out = msg.outcome;

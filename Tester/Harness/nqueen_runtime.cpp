@@ -1,13 +1,14 @@
-// Compiled into every solver module. The host (a worker) drives it in four steps, so that only the solver's own
-// function is timed:
+// Compiled into every solver module. The host (a worker) drives it in steps:
 //
+//   nq_stack_top()         read when the module is loaded, before any code of the solver runs (the memory measurement needs it)
 //   nq_alloc_input(bytes)  the host writes the problem into the returned buffer
-//   nq_prepare(case, debug) decodes the problem                                  (not timed)
-//   nq_solve()             calls the solver's function and keeps what it returns (timed)
-//   nq_pack()              flattens the result into bytes for the host            (not timed)
+//   nq_prepare(case, debug) decodes the problem
+//   nq_solve()             calls the solver's function and keeps what it returns
+//   nq_pack()              flattens the result into bytes for the host
 //
-// The host reads nq_heap_top() after nq_prepare and again after nq_solve, before nq_pack: packing allocates too, and that
-// is the tester's memory, not the solver's.
+// Only nq_solve is timed. The rules of a competition (checked when a solver is compiled, driver/scripts/check-rules.mjs) forbid global
+// variables and redefining what this file uses too, such as operator new, so that none of the other steps runs code of the solver. The memory
+// is measured over all of them, from outside the module (Tester/Execution/memory-probe.ts): there is no counter in here to turn off.
 //
 // Input bytes:  n | queen count (u16 LE) | (row, col) per queen | n*n grid chars ('.', 'H' hole, 'W' wall)
 // Result bytes: see Tester/Board/solution-set.ts.
@@ -19,7 +20,6 @@
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
-#include <unistd.h>
 
 EM_JS_DEPS(nq_host_deps, "$UTF8ToString");
 
@@ -175,11 +175,12 @@ int nq_pack() {
   return g_case == kWalled ? packCells() : packColumns();
 }
 
-// The top of the heap. The allocator never gives memory back, so the difference between two readings is the most heap
-// the solver held at once, even if it freed some of it. 0 where there is no Emscripten allocator to ask.
-int nq_heap_top() {
+// Where the stack begins (it grows down from here, and the heap grows up from here). The host calls this when the module is loaded, with nothing
+// on the stack yet, so the position of this function's frame is the answer. Not taken from a linker symbol such as __heap_base: a solver can
+// define a symbol of that name. 0 where there is no WebAssembly stack to ask about.
+int nq_stack_top() {
 #ifdef __EMSCRIPTEN__
-  return static_cast<int>(reinterpret_cast<size_t>(sbrk(0)));
+  return static_cast<int>(reinterpret_cast<size_t>(__builtin_frame_address(0)));
 #else
   return 0;
 #endif

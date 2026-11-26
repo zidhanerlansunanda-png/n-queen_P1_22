@@ -48,11 +48,21 @@ export function formatTime(ms: number): string {
   return `${value} ${unit}`;
 }
 
-/** "512 B", "968 KB", "1.37 MB", as a number and a unit. */
+/**
+ * "512 B", "4.37 KB", "1.234 MB", as a number and a unit. Every figure keeps its decimals (two for KB, 10 bytes; three for MB, 1 KB), so that
+ * 4.00 KB and 4.37 KB are not both "4 KB": the score counts bytes, and a board of teams a few hundred bytes apart should show it.
+ */
 export function splitBytes(bytes: number): { value: string; unit: "B" | "KB" | "MB" } {
   if (bytes < 1024) return { value: String(Math.round(bytes)), unit: "B" };
-  if (bytes < 1024 * 1024) return { value: String(Math.round(bytes / 1024)), unit: "KB" };
-  return { value: (bytes / (1024 * 1024)).toFixed(2), unit: "MB" };
+  const kb = (bytes / 1024).toFixed(2);
+  if (Number(kb) < 1024) return { value: kb, unit: "KB" };
+  return { value: (bytes / (1024 * 1024)).toFixed(3), unit: "MB" };
+}
+
+/** "4,362 bytes": the exact figure, for a tooltip beside the rounded one. */
+export function exactBytes(bytes: number): string {
+  const n = Math.round(bytes);
+  return `${n.toLocaleString("en-US")} ${n === 1 ? "byte" : "bytes"}`;
 }
 
 export function formatBytes(bytes: number): string {

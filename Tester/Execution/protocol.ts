@@ -1,4 +1,5 @@
 // Shared contract between the main thread, the worker and the environment-neutral runner. No DOM or worker globals.
+import type { MemoryUse } from "./memory-probe";
 import type { Duplicates, InvalidSolution } from "../Board/solution-check";
 import type { SolutionSet } from "../Board/solution-set";
 import type { ProblemCase } from "../Board/terrain";
@@ -72,16 +73,21 @@ export interface TimeStats {
   medianMs: number;
   /** Median absolute deviation from the median. Unlike a standard deviation, one slow outlier hardly moves it. */
   madMs: number;
-  /** Timed runs, not counting the warm-up. */
+  /** The runs the statistics are made of. */
   samples: number;
-  /** Compute time of the first run, which is left out of the statistics. */
-  warmupMs: number;
+  /**
+   * Compute time of the first run, when it is the warm-up and left out of the statistics. Missing when a discarded run came before the first
+   * one (StartMessage.warmupRun): then the first run is one of the samples.
+   */
+  warmupMs?: number;
+  /** The samples one by one, in the order they ran. */
+  runsMs?: number[];
 }
 
 export interface Metrics {
   time: TimeStats;
-  /** The most heap the solver held at once, in bytes. Missing when the module was built without nq_heap_top. */
-  heapPeakBytes?: number;
+  /** The memory of the run that used the most. Missing when the module was built before it was measured like this (see memory-probe.ts). */
+  memory?: MemoryUse;
 }
 
 /** How far the measurement of a run has come. */
@@ -96,8 +102,8 @@ export type RunOutcome =
   | {
       status: "completed";
       computeMs: number;
-      /** Heap the solver held at once during this run, when the module can tell. */
-      heapPeakBytes?: number;
+      /** The memory this one run wrote, when the module can be measured (see memory-probe.ts). */
+      memory?: MemoryUse;
       set: SolutionSet;
       /** The first returned solution that is wrong, if any. */
       invalid?: InvalidSolution;
@@ -127,6 +133,8 @@ export interface StartMessage {
   snapshotTail: number;
   /** Timed runs after the first one. 0 runs the solver once and measures nothing. */
   timedRuns: number;
+  /** Run the solver once before the first run and drop what comes of it, so that the first run is timed too (see measure.ts). */
+  warmupRun?: boolean;
 }
 export type ToWorker = StartMessage;
 
@@ -142,6 +150,8 @@ export type RunProgress =
  */
 export type MeasureReport =
   | RunProgress
+  /** The discarded run is over, and the first run starts. */
+  | { type: "warmed" }
   /** `timedRuns` is how many timed runs follow: 0 when this run is not measured further. */
   | { type: "outcome"; outcome: RunOutcome; timedRuns: number }
   /** `done` of `total` runs are finished, the first one included. */
