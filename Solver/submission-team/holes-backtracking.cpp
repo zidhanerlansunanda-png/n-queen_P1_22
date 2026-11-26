@@ -1,7 +1,4 @@
-
-
 #include "nqueens.h"
-
 #include <cstdint>
 #include <string>
 #include <vector>
